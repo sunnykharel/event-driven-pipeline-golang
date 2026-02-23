@@ -1,0 +1,171 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Description: A serverless application for processing credentials from an S3 bucket and storing hashed data into a DynamoDB table.
+
+Parameters:
+  RawDataBucketName:
+    Type: String
+    Default: 'raw-data-bucket-7'
+    MinLength: 3
+    Description: Name of the S3 bucket for uploading raw data.
+  CompromisedCredentialsTableName:
+    Type: String
+    Default: 'compromised-credentials'
+    MinLength: 3
+    Description: Name of the DynamoDB table for storing compromised credentials.
+
+Resources:
+  RawDataBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Ref RawDataBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  DataIngestionFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: go1.x
+    Properties:
+      Handler: bootstrap
+      Runtime: provided.al2023
+      CodeUri: ingestion/src/
+      MemorySize: 5376
+      Timeout: 270
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref RawDataBucketName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt CompromisedCredentialsTable.Arn
+      Environment:
+        Variables:
+          COMPROMISEDCREDENTIALS_TABLE_NAME: !Ref CompromisedCredentialsTableName
+          RAW_DATA_BUCKET: !Ref RawDataBucketName
+      Events:
+        ObjectCreatedEvent:
+          Type: S3
+          Properties:
+            Bucket: !Ref RawDataBucket
+            Events: s3:ObjectCreated:*
+
+  CompromisedCredentialsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref CompromisedCredentialsTableName
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: email
+          AttributeType: S
+        - AttributeName: domain
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: EmailIndex
+          KeySchema:
+            - AttributeName: email
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: DomainIndex
+          KeySchema:
+            - AttributeName: domain
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: True
+
+  APIFetchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Handles API Gateway requests for retrieving credentials.
+      CodeUri: api/
+      Handler: app.main.handler
+      Runtime: python3.10
+      MemorySize: 1024
+      Timeout: 30
+      Tracing: Active
+      Environment:
+        Variables:
+          COMPROMISEDCREDENTIALS_TABLE_NAME: !Ref CompromisedCredentialsTableName
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:Scan
+                - dynamodb:DescribeTable
+              Resource:
+                - !GetAtt CompromisedCredentialsTable.Arn
+                - !Sub "${CompromisedCredentialsTable.Arn}/index/*"
+      Events:
+        APIGETcredentials:
+          Type: Api
+          Properties:
+            Path: /credentials
+            Method: GET
+            RestApiId: !Ref API
+
+  API:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: CredentialsAPI
+      StageName: Prod
+      DefinitionBody:
+        openapi: '3.0'
+        info: {}
+        paths:
+          /credentials:
+            get:
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${APIFetchFunction.Arn}/invocations
+              responses: {}
+      EndpointConfiguration: REGIONAL
+      TracingEnabled: true
+      Auth: {}
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type'"
+        AllowOrigin: "'*'"
+
+Outputs:
+  APIEndpoint:
+    Description: API Gateway endpoint
+    Value: !Sub "https://${API}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
+
+  RawDataBucketName:
+    Description: Name of the S3 bucket for raw data.
+    Value: !Ref RawDataBucket
+
+  CompromisedCredentialsTableName:
+    Description: Name of the DynamoDB table for storing credentials.
+    Value: !Ref CompromisedCredentialsTable
+
+  DataIngestionFunctionARN:
+    Description: ARN of the ingestion Lambda function
+    Value: !GetAtt DataIngestionFunction.Arn
+
+  APIFetchFunctionARN:
+    Description: ARN of the API Lambda function
+    Value: !GetAtt APIFetchFunction.Arn
