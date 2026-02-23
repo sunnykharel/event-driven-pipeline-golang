@@ -1,5 +1,5 @@
 
-# SpyCloudChallenge
+# Project
 
 This repository contains the project. Below are detailed instructions on how to run the project locally, deploy the backend using AWS SAM, and connect the frontend to the serverless API. For more information about the design choices made during the project, refer to the [DesignDecisions.md](DesignDecisions.md) file.
 
