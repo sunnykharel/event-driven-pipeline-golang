@@ -1,5 +1,5 @@
 
-# Design Decisions for SpyCloud Challenge
+# Design Decisions for Challenge
 
 This document outlines the architectural and design decisions made for the SpyCloud Challenge, detailing the backend data ingestion pipeline, API design, and frontend implementation.
 
